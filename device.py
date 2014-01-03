@@ -21,6 +21,7 @@ yes_or_no_re      = re.compile("\[yes/no\]")
 enable_passwd_re  = re.compile("assword")
 comment_re        = re.compile("^(\s)*!")
 blank_re          = re.compile("^(\s)*$")
+version_re        = re.compile("version")
 
 class UnexpectedStream(Exception):
     def __init__(self,error_string):
@@ -650,11 +651,24 @@ class Device(object):
             self.proc.expect(privileged_re)
     
             running_config = self.send_cmd("show run")
+            
+            running_config_list = running_config.split("\n")
     
+            n = 0
+            for i in running_config_list:
+                if (version_re.findall(i) == []):
+                    n = n + 1
+                    continue
+                else:
+                    break
+            running_config_list = running_config_list[n:]
+    
+            running_config = "\n".join(running_config_list)
             config_archive_path = "config_archive/" + self.execution_name + "/" + self.name + ".cfg"
             fd = open(config_archive_path,"w")
             fd.write(running_config)
             fd.close()
+        
         except KeyboardInterrupt:
             colorprint.error_print("Keyboard Interrup has been received..Exiting..")
             raise KeyboardInterrupt    
@@ -663,7 +677,8 @@ class Device(object):
             self.logger.error("Unable to save configfile for device %s," \
                               "refer %s.stdout for details" \
                                 % (self.name, self.name))
-            raise SaveConfigException        
+            raise SaveConfigException
+               
 
     def disconnect(self,force=False):
         """terminate an exsiting telnet session.
