@@ -1,0 +1,1 @@
+A lightweight python script using pexpect for interacting with cisco routers and switches including device_reset,execute_cmd,send_config and save_config.
