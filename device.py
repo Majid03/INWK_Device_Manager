@@ -650,7 +650,7 @@ class Device(object):
             self.logger.debug("Sending return character to get a new prompt..") 
             self.proc.expect(privileged_re)
     
-            running_config = self.send_cmd("show run")
+            running_config = self.send_cmd("show run",max_performance=True)
             
             running_config_list = running_config.split("\n")
     
