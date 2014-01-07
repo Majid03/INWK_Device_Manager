@@ -15,6 +15,7 @@ import data.data_fetcher
 unprivileged_re   = re.compile("[\w\-_]+>")
 privileged_re     = re.compile("[\w\-_]+#")
 config_re         = re.compile("\(config[^\)]*\)")
+controller_re     = re.compile("\([\w\s]+\)\s>")
 initial_dialog_re = re.compile("initial\s+configuration\s+dialog")
 auto_install_re   = re.compile("terminate\sautoinstall")
 confirm_re        = re.compile("\[confirm\]")
@@ -309,21 +310,26 @@ class Device(object):
             self.logger.debug("Sending return character to skip over the banner message")
             time.sleep(0.2)
             self.proc.send("\r")
-            
+            self.proc.send("\r")
+            self.proc.send("\r")
+
             attempt_counter = 1
             
             while (attempt > 0):
                 index = self.proc.expect([unprivileged_re,privileged_re,\
                                     config_re,initial_dialog_re,auto_install_re,\
-                                    pexpect.TIMEOUT])
+                                    controller_re,pexpect.TIMEOUT])
+
                 if index == 0:
                     self.logger.info("We are now in the unprivileged mode")
                     self.enabled = False
                     return 0;
+
                 elif index == 1:
                     self.logger.info("We are now in the privileged mode")
                     self.enabled = True
                     return 0;
+
                 elif index == 2:
                     self.logger.info("We are now in the configuration mode")
                     self.logger.debug("Sending end messages to exit to the privileged mode..")
@@ -332,6 +338,7 @@ class Device(object):
                     self.logger.info("We are now in the configuration mode")
                     self.enabled = True
                     return 0;
+
                 elif index == 3:
                     self.logger.info("We are now in the initial configuration dialogue")
                     self.logger.debug("Sending no to exit out of the setup wizard..")
@@ -351,19 +358,32 @@ class Device(object):
                         time.sleep(interval)
                         self.proc.send("\r")
                         attempt = attempt - 1
-                        self.logger.warning("#%s login attempt failed..now starting #%s attempt" \
+                        self.logger.warning("#%s login attempt failed.." \
                                              % (str(attempt_counter),str(attempt_counter+1)))
                         attempt_counter = attempt_counter + 1
                         continue
+
                 elif index == 4:
                     self.logger.info("We are asked to confirm terminating the auto-install,sending yes..")
                     self.proc.send("yes\r")
                     time.sleep(interval)
                     continue
+
+                elif index == 5:
+                    self.logger.info("We are in the wireless controller prompt,sending control-character to exit")
+                    self.proc.sendcontrol('^')
+                    self.proc.send('x')
+                    self.proc.expect(privileged_re)
+                    self.proc.send("disconnect\r")
+                    self.proc.expect(confirm_re)
+                    self.proc.send("\r")
+                    self.logger.info("We have exited out of the wireless controller.")
+                    continue
+                    
                 else:
                     time.sleep(interval)
                     self.proc.send("\r")
-                    self.logger.warning("#%s login attempt failed..now starting #%s attempt" \
+                    self.logger.warning("#%s login attempt failed.." \
                                              % (str(attempt_counter),str(attempt_counter+1)))
                     attempt_counter = attempt_counter + 1
                     attempt = attempt - 1
