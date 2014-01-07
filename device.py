@@ -262,7 +262,7 @@ class Device(object):
         self._eof_failure = eof_failure
 
 
-    def login(self,username,password,attempt=2,interval=0.5,force=False):
+    def login(self,username,password,attempt=2,interval=1,force=False):
         """spawn a telnet session to a given device
     
             The login method spawns a telnet session to the device using the provisioned 
@@ -313,13 +313,12 @@ class Device(object):
             self.logger.debug("Sending return character to skip over the banner message")
             time.sleep(0.2)
             self.proc.send("\r")
-            self.proc.send("\r")
-            self.proc.send("\r")
 
-            attempt_counter = 1
-            page_counter    = 0
+            attempt_counter  = 1
+            page_counter     = 0
             
             while (attempt > 0):
+                self.proc.send("\r")
                 index = self.proc.expect([unprivileged_re,privileged_re,\
                                     config_re,initial_dialog_re,auto_install_re,\
                                     controller_re,paging_re,pexpect.TIMEOUT])
@@ -362,8 +361,7 @@ class Device(object):
                         time.sleep(interval)
                         self.proc.send("\r")
                         attempt = attempt - 1
-                        self.logger.warning("#%s login attempt failed.." \
-                                             % (str(attempt_counter),str(attempt_counter+1)))
+                        self.logger.warning("#%s login attempt failed.." % (str(attempt_counter)))
                         attempt_counter = attempt_counter + 1
                         continue
 
@@ -396,8 +394,7 @@ class Device(object):
                 else:
                     time.sleep(interval)
                     self.proc.send("\r")
-                    self.logger.warning("#%s login attempt failed.." \
-                                             % (str(attempt_counter),str(attempt_counter+1)))
+                    self.logger.warning("#%s login attempt failed.." % (str(attempt_counter)))
                     attempt_counter = attempt_counter + 1
                     attempt = attempt - 1
         
@@ -467,7 +464,7 @@ class Device(object):
                 if index == 0:
                     self.logger.debug("We are in unprivileged mode, sending enable command...")
                     self.proc.send("enable" + "\r")
-                    time.sleep(0.1)
+                    time.sleep(0.5)
                     continue;
                 elif index == 1:
                     if attempt_counter > 1:
