@@ -9,6 +9,7 @@ import string
 import colorprint
 import logging
 import datetime
+import data.data_fetcher
 
 # Compiled regular expressions to interact with the device
 unprivileged_re   = re.compile("[\w\-_]+>")
@@ -133,6 +134,7 @@ class Device(object):
         _logfh   : a file descripter for the log file
         _logch   : a file descripter for the log output in stdout 
         _execution_name : a string holding the name of the running execution of the device object
+        _eof_failure : an integer which records the number of times the login encounters eof_failure
     """
 
     def __init__(self,device_data,execution_name="",debug=False):
@@ -155,6 +157,7 @@ class Device(object):
         self._logger  = None
         self._logfh   = None
         self._logch   = None
+        self._eof_failure = 0
         if execution_name == "":
             self._execution_name = datetime.datetime.now().strftime("%Y-%m-%d-%H")
         else:
@@ -248,7 +251,16 @@ class Device(object):
     def execution_name(self):
         return self._execution_name 
 
-    def login(self,username,password,attempt=2,interval=0.5):
+    @property
+    def eof_failure(self):
+        return self._eof_failure
+
+    @eof_failure.setter
+    def eof_failure(self,eof_failure):
+        self._eof_failure = eof_failure
+
+
+    def login(self,username,password,attempt=2,interval=0.5,force=False):
         """spawn a telnet session to a given device
     
             The login method spawns a telnet session to the device using the provisioned 
@@ -284,6 +296,7 @@ class Device(object):
             else:
                 self.outfd = open(stdout_log_path, "w") 
                 self.proc.logfile_read = self.outfd
+            
             self.proc.expect("username")
             self.logger.debug("Get username prompt,sending username %s" % username)
             
@@ -356,6 +369,29 @@ class Device(object):
                     attempt = attempt - 1
         
             raise UnexpectedStream("Expected Stream was encountered when attempting to login")
+
+        except pexpect.EOF:
+            if force:
+                if self.eof_failure < 2:              
+                    if self.debug == True:
+                        self.tee.close()
+                    else:
+                        self.outfd.close()
+
+                    self.eof_failure = self.eof_failure + 1
+                    self.logger.error("No connection or line is busy,attempting to clear the line and re-login")
+                    self.clear_line()
+                    time.sleep(2)
+                    self.login(username,password)
+                else:
+                    self.logger.error("Unable to login to device %s, refer %s.stdout for details" \
+                                % (self.name, self.name))
+                    raise LoginException
+            
+            else:
+                self.logger.error("Unable to login to device %s, refer %s.stdout for details" \
+                                % (self.name, self.name))
+                raise LoginException
 
         except KeyboardInterrupt:
             colorprint.error_print("Keyboard Interrup has been received..Exiting..")
@@ -745,10 +781,55 @@ class Device(object):
             time.sleep(0.2)
             os.system("clear")
  
-    # TODO : clear line function to be implemented when we have the credentials for
-    # accessing the terminal server
     def clear_line(self):
-        pass
+        
+        name_re   = re.compile("(\d+)(\w)(\d)")
+        name_list = name_re.findall(self.name)
+
+        pod_number  = int(name_list[0][0])
+        device_type = name_list[0][1]
+        device_num  = int(name_list[0][2])
+
+        pod_number_list = []
+        pod_number_list.append(pod_number)
+
+        termsrv = data.data_fetcher.get_pod_term_serv(pod_number_list)[0][0]
+        
+        if pod_number % 2 == 0:
+            initial_select = "2"
+        else:
+            initial_select = "1"
+       
+        if device_type == "R": 
+            second_select = str(device_num)
+        else:
+            second_select = str(device_num + 4)
+        
+        try:
+            term_session = pexpect.spawn("telnet %s 23" % termsrv)
+            if self.debug:
+                term_session.logfile_read = sys.stdout
+    
+            term_session.expect("sername")
+            term_session.send("username\r")
+            term_session.expect("assword") 
+            term_session.send("password\r")
+    
+            term_session.expect("Line Reset Menu")
+            time.sleep(0.1)
+            term_session.send(initial_select)
+    
+            for i in range(2):
+                term_session.expect("Selection")
+                term_session.send(second_select + "\r")
+                term_session.expect("\[confirm\]")
+                term_session.send("\r")
+    
+            term_session.expect("Selection")
+            term_session.terminate()
+            self.logger.info("clear line is successfully performed")
+        except:
+            self.logger.info("clear line fails")
 
     def __del__(self):
         pass
