@@ -15,7 +15,7 @@ import data.data_fetcher
 unprivileged_re   = re.compile("[\w\-_]+>")
 privileged_re     = re.compile("[\w\-_]+#")
 config_re         = re.compile("\(config[^\)]*\)")
-controller_re     = re.compile("\([\w\s]+\)\s>")
+controller_re     = re.compile("(\([\w\s]+\)\s>)|(User:)|(Password:)")
 initial_dialog_re = re.compile("initial\s+configuration\s+dialog")
 auto_install_re   = re.compile("terminate\sautoinstall")
 confirm_re        = re.compile("\[confirm\]")
@@ -24,6 +24,7 @@ enable_passwd_re  = re.compile("assword")
 comment_re        = re.compile("^(\s)*!")
 blank_re          = re.compile("^(\s)*$")
 version_re        = re.compile("version")
+paging_re         = re.compile("(-)+More(-)+")
 
 class UnexpectedStream(Exception):
     def __init__(self,error_string):
@@ -277,7 +278,9 @@ class Device(object):
                 password : a string holding the password of telnet session
                 attempt  : an integer indicating the number of attempts to be made
                 interval : a float holding the time for waiting the correct attempt
-    
+                force    : a boolean holding whether we will attempt to clear the line 
+                           if line is busy
+
             Returns:
                 Upon succussful login,code 0 will be returned to indicate a clear status.
     
@@ -314,11 +317,12 @@ class Device(object):
             self.proc.send("\r")
 
             attempt_counter = 1
+            page_counter    = 0
             
             while (attempt > 0):
                 index = self.proc.expect([unprivileged_re,privileged_re,\
                                     config_re,initial_dialog_re,auto_install_re,\
-                                    controller_re,pexpect.TIMEOUT])
+                                    controller_re,paging_re,pexpect.TIMEOUT])
 
                 if index == 0:
                     self.logger.info("We are now in the unprivileged mode")
@@ -380,6 +384,15 @@ class Device(object):
                     self.logger.info("We have exited out of the wireless controller.")
                     continue
                     
+                elif index == 6:
+                    if page_counter == 0:
+                        self.logger.info("We are in the middle of a command output, send q to stop the output")
+                        self.proc.send('q')
+                        page_counter = page_counter + 1
+                        continue
+                    else:
+                        continue
+
                 else:
                     time.sleep(interval)
                     self.proc.send("\r")
