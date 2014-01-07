@@ -467,7 +467,11 @@ class Device(object):
             self.proc.send("\r")
             self.proc.expect(privileged_re)
             self.logger.debug("We are now in privileged mode")
-    
+
+            switch_name_re = re.compile("S")
+            if switch_name_re.findall(self.name) != [] :
+                erase_vlan = True
+
             if erase_vlan:
                 self.logger.info("Boolean erase_vlan set to be True,going to delete vlan database file")  
                 self.proc.send("delete flash:vlan.dat\r")
