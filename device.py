@@ -9,11 +9,13 @@ import string
 import colorprint
 import logging
 import datetime
+import data.data_fetcher
 
 # Compiled regular expressions to interact with the device
 unprivileged_re   = re.compile("[\w\-_]+>")
 privileged_re     = re.compile("[\w\-_]+#")
 config_re         = re.compile("\(config[^\)]*\)")
+controller_re     = re.compile("(\([\w\s]+\)\s>)|(User:)|(Password:)")
 initial_dialog_re = re.compile("initial\s+configuration\s+dialog")
 auto_install_re   = re.compile("terminate\sautoinstall")
 confirm_re        = re.compile("\[confirm\]")
@@ -22,6 +24,7 @@ enable_passwd_re  = re.compile("assword")
 comment_re        = re.compile("^(\s)*!")
 blank_re          = re.compile("^(\s)*$")
 version_re        = re.compile("version")
+paging_re         = re.compile("(-)+More(-)+")
 
 class UnexpectedStream(Exception):
     def __init__(self,error_string):
@@ -133,6 +136,7 @@ class Device(object):
         _logfh   : a file descripter for the log file
         _logch   : a file descripter for the log output in stdout 
         _execution_name : a string holding the name of the running execution of the device object
+        _eof_failure : an integer which records the number of times the login encounters eof_failure
     """
 
     def __init__(self,device_data,execution_name="",debug=False):
@@ -155,6 +159,7 @@ class Device(object):
         self._logger  = None
         self._logfh   = None
         self._logch   = None
+        self._eof_failure = 0
         if execution_name == "":
             self._execution_name = datetime.datetime.now().strftime("%Y-%m-%d-%H")
         else:
@@ -248,7 +253,16 @@ class Device(object):
     def execution_name(self):
         return self._execution_name 
 
-    def login(self,username,password,attempt=2,interval=0.5):
+    @property
+    def eof_failure(self):
+        return self._eof_failure
+
+    @eof_failure.setter
+    def eof_failure(self,eof_failure):
+        self._eof_failure = eof_failure
+
+
+    def login(self,username,password,attempt=2,interval=1,force=False):
         """spawn a telnet session to a given device
     
             The login method spawns a telnet session to the device using the provisioned 
@@ -264,7 +278,9 @@ class Device(object):
                 password : a string holding the password of telnet session
                 attempt  : an integer indicating the number of attempts to be made
                 interval : a float holding the time for waiting the correct attempt
-    
+                force    : a boolean holding whether we will attempt to clear the line 
+                           if line is busy
+
             Returns:
                 Upon succussful login,code 0 will be returned to indicate a clear status.
     
@@ -284,6 +300,7 @@ class Device(object):
             else:
                 self.outfd = open(stdout_log_path, "w") 
                 self.proc.logfile_read = self.outfd
+            
             self.proc.expect("username")
             self.logger.debug("Get username prompt,sending username %s" % username)
             
@@ -296,21 +313,26 @@ class Device(object):
             self.logger.debug("Sending return character to skip over the banner message")
             time.sleep(0.2)
             self.proc.send("\r")
-            
-            attempt_counter = 1
+
+            attempt_counter  = 1
+            page_counter     = 0
             
             while (attempt > 0):
+                self.proc.send("\r")
                 index = self.proc.expect([unprivileged_re,privileged_re,\
                                     config_re,initial_dialog_re,auto_install_re,\
-                                    pexpect.TIMEOUT])
+                                    controller_re,paging_re,pexpect.TIMEOUT])
+
                 if index == 0:
                     self.logger.info("We are now in the unprivileged mode")
                     self.enabled = False
                     return 0;
+
                 elif index == 1:
                     self.logger.info("We are now in the privileged mode")
                     self.enabled = True
                     return 0;
+
                 elif index == 2:
                     self.logger.info("We are now in the configuration mode")
                     self.logger.debug("Sending end messages to exit to the privileged mode..")
@@ -319,6 +341,7 @@ class Device(object):
                     self.logger.info("We are now in the configuration mode")
                     self.enabled = True
                     return 0;
+
                 elif index == 3:
                     self.logger.info("We are now in the initial configuration dialogue")
                     self.logger.debug("Sending no to exit out of the setup wizard..")
@@ -338,24 +361,67 @@ class Device(object):
                         time.sleep(interval)
                         self.proc.send("\r")
                         attempt = attempt - 1
-                        self.logger.warning("#%s login attempt failed..now starting #%s attempt" \
-                                             % (str(attempt_counter),str(attempt_counter+1)))
+                        self.logger.warning("#%s login attempt failed.." % (str(attempt_counter)))
                         attempt_counter = attempt_counter + 1
                         continue
+
                 elif index == 4:
                     self.logger.info("We are asked to confirm terminating the auto-install,sending yes..")
                     self.proc.send("yes\r")
                     time.sleep(interval)
                     continue
+
+                elif index == 5:
+                    self.logger.info("We are in the wireless controller prompt,sending control-character to exit")
+                    self.proc.sendcontrol('^')
+                    self.proc.send('x')
+                    self.proc.expect(privileged_re)
+                    self.proc.send("disconnect\r")
+                    self.proc.expect(confirm_re)
+                    self.proc.send("\r")
+                    self.logger.info("We have exited out of the wireless controller.")
+                    continue
+                    
+                elif index == 6:
+                    if page_counter == 0:
+                        self.logger.info("We are in the middle of a command output, send q to stop the output")
+                        self.proc.send('q')
+                        page_counter = page_counter + 1
+                        continue
+                    else:
+                        continue
+
                 else:
                     time.sleep(interval)
                     self.proc.send("\r")
-                    self.logger.warning("#%s login attempt failed..now starting #%s attempt" \
-                                             % (str(attempt_counter),str(attempt_counter+1)))
+                    self.logger.warning("#%s login attempt failed.." % (str(attempt_counter)))
                     attempt_counter = attempt_counter + 1
                     attempt = attempt - 1
         
             raise UnexpectedStream("Expected Stream was encountered when attempting to login")
+
+        except pexpect.EOF:
+            if force:
+                if self.eof_failure < 2:              
+                    if self.debug == True:
+                        self.tee.close()
+                    else:
+                        self.outfd.close()
+
+                    self.eof_failure = self.eof_failure + 1
+                    self.logger.error("No connection or line is busy,attempting to clear the line and re-login")
+                    self.clear_line()
+                    time.sleep(2)
+                    self.login(username,password)
+                else:
+                    self.logger.error("Unable to login to device %s, refer %s.stdout for details" \
+                                % (self.name, self.name))
+                    raise LoginException
+            
+            else:
+                self.logger.error("Unable to login to device %s, refer %s.stdout for details" \
+                                % (self.name, self.name))
+                raise LoginException
 
         except KeyboardInterrupt:
             colorprint.error_print("Keyboard Interrup has been received..Exiting..")
@@ -398,7 +464,7 @@ class Device(object):
                 if index == 0:
                     self.logger.debug("We are in unprivileged mode, sending enable command...")
                     self.proc.send("enable" + "\r")
-                    time.sleep(0.1)
+                    time.sleep(0.5)
                     continue;
                 elif index == 1:
                     if attempt_counter > 1:
@@ -467,7 +533,11 @@ class Device(object):
             self.proc.send("\r")
             self.proc.expect(privileged_re)
             self.logger.debug("We are now in privileged mode")
-    
+
+            switch_name_re = re.compile("S")
+            if switch_name_re.findall(self.name) != [] :
+                erase_vlan = True
+
             if erase_vlan:
                 self.logger.info("Boolean erase_vlan set to be True,going to delete vlan database file")  
                 self.proc.send("delete flash:vlan.dat\r")
@@ -650,7 +720,7 @@ class Device(object):
             self.logger.debug("Sending return character to get a new prompt..") 
             self.proc.expect(privileged_re)
     
-            running_config = self.send_cmd("show run")
+            running_config = self.send_cmd("show run",max_performance=True)
             
             running_config_list = running_config.split("\n")
     
@@ -741,10 +811,55 @@ class Device(object):
             time.sleep(0.2)
             os.system("clear")
  
-    # TODO : clear line function to be implemented when we have the credentials for
-    # accessing the terminal server
     def clear_line(self):
-        pass
+        
+        name_re   = re.compile("(\d+)(\w)(\d)")
+        name_list = name_re.findall(self.name)
+
+        pod_number  = int(name_list[0][0])
+        device_type = name_list[0][1]
+        device_num  = int(name_list[0][2])
+
+        pod_number_list = []
+        pod_number_list.append(pod_number)
+
+        termsrv = data.data_fetcher.get_pod_term_serv(pod_number_list)[0][0]
+        
+        if pod_number % 2 == 0:
+            initial_select = "2"
+        else:
+            initial_select = "1"
+       
+        if device_type == "R": 
+            second_select = str(device_num)
+        else:
+            second_select = str(device_num + 4)
+        
+        try:
+            term_session = pexpect.spawn("telnet %s 23" % termsrv)
+            if self.debug:
+                term_session.logfile_read = sys.stdout
+    
+            term_session.expect("sername")
+            term_session.send("username\r")
+            term_session.expect("assword") 
+            term_session.send("password\r")
+    
+            term_session.expect("Line Reset Menu")
+            time.sleep(0.1)
+            term_session.send(initial_select)
+    
+            for i in range(2):
+                term_session.expect("Selection")
+                term_session.send(second_select + "\r")
+                term_session.expect("\[confirm\]")
+                term_session.send("\r")
+    
+            term_session.expect("Selection")
+            term_session.terminate()
+            self.logger.info("clear line is successfully performed")
+        except:
+            self.logger.info("clear line fails")
 
     def __del__(self):
         pass
